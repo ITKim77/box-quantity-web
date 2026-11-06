@@ -3,7 +3,7 @@
 도면에서 읽을 수 있는 값은 변수로 쓴다. 표 왼쪽에 변수식, 오른쪽에 도면 값을 넣은 계산을 보여 준다.
 원본 산출서가 있으면 맨 앞에 비교 결과를 보여 주고, 없으면 도면 산출 결과만 보여 준다.
 글자색: 붉은색은 입력값을 받는 칸(문서에서 그 값이 처음 나오는 곳) 한 곳뿐이다. 이후 인용과 계산은 파란색, 가정값과 규칙은 검은색이다.
-여러 공종에 쓰는 입력값은 앞쪽 공통 표에, 나머지는 처음 쓰는 공종 안에 둔다.
+여러 공종에 쓰는 입력값은 앞쪽 공통 표에, 나머지는 처음 쓰는 공종 안에 둔다. 가정값(비계공제)은 입력칸 없이 고정이다.
 웹 화면용(frozen=False): 변수표의 값을 바꾸면 페이지 안의 계산 엔진이 전 공종을 다시 계산한다. 엔진은 파이썬 모델과 같은 규칙이며,
 tests/test_parametric.py가 두 결과를 대조한다.
 내려받는 파일용(frozen=True): 입력칸과 스크립트가 없어 값을 고칠 수 없고, 확인 사항, 검산, 설명, 원본 비교를 싣지 않는다.
@@ -256,9 +256,7 @@ class ReadableBoqAgent:
         cls = INPUT_CLASS[v["kind"]]
         self.placed.add(v["name"])
         box = f'<span class="num k-{cls}" id="v-{esc(v["name"])}">{value}</span>' if self.frozen else f'<input type="number" step="any" class="num k-{cls}" id="v-{esc(v["name"])}" data-var="{esc(v["name"])}" value="{value}" aria-label="{esc(v["name"])}">'
-        # 가정값 표에는 출처 칸이 없으므로 웹에서 고친 사실은 뜻 칸에 남긴다
-        label = f'{v["label"]} ({v["source"]})' if v["kind"] == "assumed" and v["source"].startswith("웹에서 수정") else v["label"]
-        return (f'<th scope="row" class="vname k-{cls}">{esc(v["name"])}</th><td>{esc(label)}</td><td class="in">{box}</td><td>{esc(v["unit"])}</td>')
+        return (f'<th scope="row" class="vname k-{cls}">{esc(v["name"])}</th><td>{esc(v["label"])}</td><td class="in">{box}</td><td>{esc(v["unit"])}</td>')
 
     def local_inputs(self, card: str, wing: bool = False) -> str:
         """이 공종에서 처음 쓰는 도면 입력값을 그 자리에서 받는다."""
@@ -551,18 +549,9 @@ class ReadableBoqAgent:
 
     # ---------------------------------------------------------- 머리말
     def variable_panel(self) -> str:
-        """앞쪽 입력 표: 여러 공종에 쓰는 도면 값(많이 쓰는 순)과 도면에 없는 가정값."""
+        """앞쪽 입력 표: 여러 공종에 쓰는 도면 값(많이 쓰는 순)."""
         common_rows = "".join(f'<tr>{self.var_row(v)}<td class="r">{len(self.usage[v["name"]]["keys"])}</td><td class="src">{esc(v["source"])}</td></tr>' for v in self.common)
         out = [f'<h3>공통 입력값 (많이 쓰는 순)</h3><div class="scroll"><table class="matrix vars"><thead><tr><th>변수</th><th>뜻</th><th>값</th><th>단위</th><th class="r">쓰는 공종 수</th><th>도면 어디서 읽었나</th></tr></thead><tbody>{common_rows}</tbody></table></div>']
-        work = {s["key"]: s["work"] for s in self.alt["summary"]}
-        assumed_rows = []
-        for v in self.model["variables"]:
-            if v["kind"] != "assumed":
-                continue
-            names = list(dict.fromkeys(work.get(k, k) for k in self.usage[v["name"]]["keys"]))
-            assumed_rows.append(f'<tr>{self.var_row(v)}<td>{esc(", ".join(names))}</td></tr>')
-        out.append('<h3>가정값 (검은색)</h3>' +
-                   f'<div class="scroll"><table class="matrix vars assumed"><thead><tr><th>변수</th><th>뜻</th><th>값</th><th>단위</th><th>영향 공종</th></tr></thead><tbody>{"".join(assumed_rows)}</tbody></table></div>')
         return "".join(out)
 
     def derived_panel(self) -> str:
@@ -698,7 +687,6 @@ tr:not(.changed) .diff{color:var(--mute);font-weight:400}
 .sum td:nth-child(6){white-space:nowrap}
 .vname{font-weight:600}
 .vars .src{color:var(--mute);font-size:13px}
-.vars.assumed th,.vars.assumed td{background:var(--warn-bg)}
 .vars tbody th{min-width:130px}
 input.num{width:96px;max-width:100%;padding:3px 6px;font:14px var(--mono);background:var(--input);color:var(--ink);border:1px solid var(--mute)}
 input.num.k-i{color:var(--c-in)}
@@ -858,7 +846,7 @@ window.QTO_STATE=function(){var edited=[];bars.forEach(function(b,i){var o=data.
         open_rows = "".join(f'<tr><th scope="row">{esc(o["item"])}</th><td>{esc(o["note"])}</td></tr>' for o in self.audit["open_items"])
         kinds = {k: sum(1 for v in self.model["variables"] if v["kind"] == k) for k in ("drawing", "assumed", "derived")}
         panel = self.variable_panel()
-        missed = [v["name"] for v in self.model["variables"] if v["name"] not in self.placed and v["kind"] != "derived"]
+        missed = [v["name"] for v in self.model["variables"] if v["name"] not in self.placed and v["kind"] not in ("derived", "assumed")]
         if missed:
             raise RuntimeError(f"입력칸을 두지 못한 변수: {missed}")
         changes = (f'<section class="plain" id="changes"><h2>차이 원인</h2><p class="intro">원본과 값이나 표기가 다른 {len(self.audit["issues"])}건입니다.</p>{self.issues_table()}</section>' if self.has_original else "")
@@ -871,7 +859,7 @@ window.QTO_STATE=function(){var edited=[];bars.forEach(function(b,i){var o=data.
 </header>
 <div class="status" role="status"><p id="edit-status">지금은 도면에서 읽은 값으로 계산한 결과입니다.</p><button type="button" id="reset" hidden>도면 값으로 되돌리기</button><ul class="legend" aria-label="글자색 구분"><li class="k-i">붉은색: 입력값 (처음 나오는 곳)</li><li class="k-c">파란색: 인용·계산한 값</li><li class="k-a">검은색: 가정값·규칙</li></ul></div>
 {self.compare_section()}
-<section class="plain" id="vars"><h2>입력값</h2><p class="intro">도면에서 읽은 값 {kinds["drawing"]}개 중 여러 공종에 쓰는 {len(self.common)}개를 여기에 모았습니다. 나머지 {kinds["drawing"] - len(self.common)}개는 처음 쓰는 공종에서 받습니다. 도면에 없는 가정값은 {kinds["assumed"]}개입니다. 값을 바꾸면 아래 수량이 모두 다시 계산됩니다.</p>{panel}</section>
+<section class="plain" id="vars"><h2>입력값</h2><p class="intro">도면에서 읽은 값 {kinds["drawing"]}개 중 여러 공종에 쓰는 {len(self.common)}개를 여기에 모았습니다. 나머지 {kinds["drawing"] - len(self.common)}개는 처음 쓰는 공종에서 받습니다. 값을 바꾸면 아래 수량이 모두 다시 계산됩니다.</p>{panel}</section>
 <section class="plain" id="shape"><h2>구조물 모양 먼저 보기</h2><p class="intro">차와 사람이 지나가는 네모난 콘크리트 통로입니다. 세 덩어리(Block)를 이어 만들고, 양 끝 네 귀퉁이에 흙을 막는 날개벽이 붙습니다.</p>{self.plan_svg()}<h3>이 문서에 나오는 말</h3>{self.glossary()}</section>
 <section class="plain" id="rules"><h2>표 읽는 법과 계산 규칙</h2><ol class="rules"><li><strong>표 읽는 법.</strong> 왼쪽이 변수식이고, 오른쪽 칸은 그 변수에 값을 넣은 계산입니다.</li><li><strong>글자색.</strong> <span class="k-i">붉은색</span>은 입력값으로, 그 값을 받는 칸(문서에서 처음 나오는 곳)에만 씁니다. 그 뒤에 인용하거나 계산한 값은 <span class="k-c">파란색</span>입니다. 검은색(어두운 화면에서는 흰색)은 도면에 근거가 없는 값으로, 가정값, 철근 규칙, 식 안의 고정 숫자입니다.</li><li><strong>넓이와 부피.</strong> 넓이 = 가로 × 세로. 부피 = 단면 넓이 × 길이.</li><li><strong>비스듬한 블록.</strong> 왼쪽과 오른쪽 길이가 다르면 평균길이를 씁니다.</li><li><strong>반올림.</strong> 줄마다 소수 셋째 자리로 맞춘 뒤 더합니다. 그래서 다른 방법으로 검산하면 0.001 정도 차이가 날 수 있습니다.</li></ol>{self.skew_svg()}</section>
 {''.join(cards)}
