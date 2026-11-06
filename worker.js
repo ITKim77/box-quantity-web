@@ -16,7 +16,7 @@ import micropip, sys, types
 await micropip.install(list(WHEELS), deps=False)
 sys.modules["pypdfium2"] = types.ModuleType("pypdfium2")  # PDF 그림 변환에만 쓰인다. 글자 읽기에는 필요 없다.
 `);
-  const zip = await (await fetch(new URL("app.zip?v=4ce4c753e1eb", self.location.href))).arrayBuffer();
+  const zip = await (await fetch(new URL("app.zip?v=da824de7295c", self.location.href))).arrayBuffer();
   py.unpackArchive(zip, "zip", { extractDir: "/app" });
   py.runPython(`import sys; sys.path.insert(0, "/app")`);
   return py;

@@ -83,7 +83,7 @@ window.runWith = async function (dxfFiles, pdfFile) {
   var dxfs = await Promise.all([].map.call(dxfFiles, async function (f) { return { name: f.name.split(/[\\/]/).pop(), data: await f.arrayBuffer() }; }));
   var pdf = pdfFile ? { data: await pdfFile.arrayBuffer() } : null;
   if (!worker) {
-    worker = new Worker('worker.js?v=4ce4c753e1eb');
+    worker = new Worker('worker.js?v=da824de7295c');
     worker.onmessage = function (e) {
       if (e.data.type === 'progress') show(e.data.text);
       else if (e.data.type === 'done') finish(e.data.result);
