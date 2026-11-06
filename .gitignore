@@ -1,0 +1,29 @@
+# 가상환경, 캐시
+.venv/
+__pycache__/
+*.pyc
+
+# 원본 설계도서: 발주처 자료이므로 저장소에 올리지 않는다
+docs/
+
+# 파이프라인 생성물: 원본에서 다시 만들 수 있고 도면 치수·수량을 담고 있다
+data/
+output/
+reports/
+
+# 개인 설정
+.claude/settings.local.json
+.obsidian/
+
+# 웹 빌드 결과물
+site/
+
+# 비공개: 이 과업의 값과 작업 기록. 내 PC에만 둔다.
+private/
+tests/
+.claude/
+CLAUDE.md
+PLAN.md
+PROGRESS.md
+PROJECT_MEMORY.md
+작업지시서.md
