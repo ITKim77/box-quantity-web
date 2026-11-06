@@ -105,7 +105,7 @@ class AlternativeSynthesizerAgent:
         sheet_table(varsheet, ["구분", "변수 이름", "값", "단위", "뜻", "도면 어디서 / 계산식"], [], [12, 24, 12, 7, 38, 62])
         for v in sorted(model["variables"], key=lambda x: ("drawing", "assumed", "rule", "derived").index(x["kind"])):
             r = varsheet.max_row + 1
-            varsheet.append([kind_label[v["kind"]], v["name"], v["value"], v["unit"], v["label"], v["formula"] or v["source"]])
+            varsheet.append([kind_label[v["kind"]], v["name"], v["value"], v["unit"], v["label"], v["formula"] or ("" if v["kind"] == "assumed" and not v["source"].startswith("웹에서 수정") else v["source"])])
             for c in range(1, 7):
                 varsheet.cell(row=r, column=c).border = BOX
             cell = varsheet.cell(row=r, column=3)

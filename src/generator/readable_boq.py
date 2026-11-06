@@ -256,7 +256,9 @@ class ReadableBoqAgent:
         cls = INPUT_CLASS[v["kind"]]
         self.placed.add(v["name"])
         box = f'<span class="num k-{cls}" id="v-{esc(v["name"])}">{value}</span>' if self.frozen else f'<input type="number" step="any" class="num k-{cls}" id="v-{esc(v["name"])}" data-var="{esc(v["name"])}" value="{value}" aria-label="{esc(v["name"])}">'
-        return (f'<th scope="row" class="vname k-{cls}">{esc(v["name"])}</th><td>{esc(v["label"])}</td><td class="in">{box}</td><td>{esc(v["unit"])}</td>')
+        # 가정값 표에는 출처 칸이 없으므로 웹에서 고친 사실은 뜻 칸에 남긴다
+        label = f'{v["label"]} ({v["source"]})' if v["kind"] == "assumed" and v["source"].startswith("웹에서 수정") else v["label"]
+        return (f'<th scope="row" class="vname k-{cls}">{esc(v["name"])}</th><td>{esc(label)}</td><td class="in">{box}</td><td>{esc(v["unit"])}</td>')
 
     def local_inputs(self, card: str, wing: bool = False) -> str:
         """이 공종에서 처음 쓰는 도면 입력값을 그 자리에서 받는다."""
@@ -558,9 +560,9 @@ class ReadableBoqAgent:
             if v["kind"] != "assumed":
                 continue
             names = list(dict.fromkeys(work.get(k, k) for k in self.usage[v["name"]]["keys"]))
-            assumed_rows.append(f'<tr>{self.var_row(v)}<td>{esc(", ".join(names))}</td><td class="src">{esc(v["source"])}</td></tr>')
-        out.append('<h3>가정값 (검은색)</h3>' + self.web('<div class="callout"><strong>주의: 도면에 근거가 없는 값입니다</strong><p>별도 지정이 없을 때 쓰는 기본값입니다. 원본 값을 그대로 쓰면 비교할 때 같은 것이 당연하므로, 이 값이 들어간 수량은 원본과 같아도 검증된 것이 아닙니다. 다른 값이 정해져 있으면 여기서 고칩니다.</p></div>') +
-                   f'<div class="scroll"><table class="matrix vars assumed"><thead><tr><th>변수</th><th>뜻</th><th>값</th><th>단위</th><th>영향 공종</th><th>도면에 없는 사유</th></tr></thead><tbody>{"".join(assumed_rows)}</tbody></table></div>')
+            assumed_rows.append(f'<tr>{self.var_row(v)}<td>{esc(", ".join(names))}</td></tr>')
+        out.append('<h3>가정값 (검은색)</h3>' +
+                   f'<div class="scroll"><table class="matrix vars assumed"><thead><tr><th>변수</th><th>뜻</th><th>값</th><th>단위</th><th>영향 공종</th></tr></thead><tbody>{"".join(assumed_rows)}</tbody></table></div>')
         return "".join(out)
 
     def derived_panel(self) -> str:
