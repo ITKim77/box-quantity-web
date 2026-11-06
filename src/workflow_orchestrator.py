@@ -5,7 +5,7 @@ Workflow Orchestrator
     python src/workflow_orchestrator.py                  docs/의 PDF가 있으면 비교
     python src/workflow_orchestrator.py --boq 경로.pdf    지정한 PDF와 비교
     python src/workflow_orchestrator.py --no-boq         원본 없이 도면만으로 산출
-    python src/workflow_orchestrator.py --docs 폴더 --assumptions 가정값.json   다른 도면으로 산출
+    python src/workflow_orchestrator.py --docs 폴더       다른 도면으로 산출
 도면이 지원하는 양식이 아니면 이유를 알려 주고 멈춘다(종료 코드 2). 원본 PDF만 읽지 못하면 도면 산출은 계속하고 이유를 보여 준다.
 도면 자체 검사가 실패하거나 독립 검증이 실패하면 성공으로 표시하지 않는다.
 """
@@ -27,10 +27,11 @@ from src.auditor.cross_auditor_agent import CrossAuditorAgent  # noqa: E402
 from src.generator.alternative_synthesizer import AlternativeSynthesizerAgent  # noqa: E402
 from src.generator.dxf_alternative_generator import generate_alternative_dxfs  # noqa: E402
 from src.generator.readable_boq import ReadableBoqAgent  # noqa: E402
-from src.model.quantity_model import ASSUMPTION_FIELDS, REFERENCE_ASSUMPTIONS, QuantityModelAgent  # noqa: E402
+from src.model.quantity_model import QuantityModelAgent  # noqa: E402
 from src.parsers.boq_agent import BoQParserAgent  # noqa: E402
 from src.parsers.cad_agent import CadParseError, CadParserAgent  # noqa: E402
 from src.reporting.qa_reporter_agent import QaReporterAgent  # noqa: E402
+from src.service import export  # noqa: E402
 
 
 BOQ_JSON = "data/boq_extracted.json"
@@ -60,11 +61,9 @@ def input_error(message: str) -> Dict[str, Any]:
     return {"status": "input_error", "message": message}
 
 
-def execute(pdf_path: Optional[str] = None, docs_dir: str = "docs", assumptions: str = "") -> Dict[str, Any]:
+def execute(pdf_path: Optional[str] = None, docs_dir: str = "docs") -> Dict[str, Any]:
     start = time.time()
-    reference = docs_dir == "docs" and not assumptions and os.path.exists(REFERENCE_ASSUMPTIONS) and os.path.exists("tests/verify_deliverables.py")
-    if not reference and not assumptions:
-        return input_error("이 도면의 가정값이 필요합니다. --assumptions 로 다음 값을 담은 JSON을 주세요: " + "; ".join(f"{k} = {v}" for k, v in ASSUMPTION_FIELDS.items()))
+    reference = docs_dir == "docs" and os.path.exists("tests/verify_deliverables.py")
     if os.path.exists("reports/input_check.json"):
         os.remove("reports/input_check.json")
     print("[1/6] 파싱 (DXF" + (", 원본 PDF" if pdf_path else ", 원본 없음") + ")")
@@ -82,7 +81,7 @@ def execute(pdf_path: Optional[str] = None, docs_dir: str = "docs", assumptions:
 
     print("[2/6] 수량 모델")
     try:
-        model = QuantityModelAgent(assumptions_path=assumptions).run()
+        model = QuantityModelAgent(reference=reference).run()
     except (ValueError, OSError) as exc:
         return input_error(str(exc))
     print(f"  산출 {len(model['lines'])}행, 철근 NET {model['rebar']['net_total_t']} t, 재료 {model['rebar']['gross_total_t']} t")
@@ -107,6 +106,7 @@ def execute(pdf_path: Optional[str] = None, docs_dir: str = "docs", assumptions:
         links = dxf_future.result()
         syn = syn_future.result()
     readable = ReadableBoqAgent().run()
+    export(reference=reference)
     print(f"  DXF {len(links)}종, 산출 {syn['lines']}행, 쉬운 산출서 카드 {readable['cards']}개")
     QaReporterAgent().run()
 
@@ -132,14 +132,13 @@ def main() -> Dict[str, Any]:
     parser.add_argument("--boq", help="비교할 원본 수량산출서 PDF")
     parser.add_argument("--no-boq", action="store_true", help="원본 없이 도면만으로 산출")
     parser.add_argument("--docs", default="docs", help="DXF 도면 폴더")
-    parser.add_argument("--assumptions", default="", help="도면에 없는 가정값 JSON (--docs 로 다른 도면을 줄 때 필수)")
     args = parser.parse_args()
     if args.no_boq:
-        return execute(None, args.docs, args.assumptions)
+        return execute(None, args.docs)
     if args.boq:
-        return execute(args.boq, args.docs, args.assumptions)
+        return execute(args.boq, args.docs)
     found = glob.glob(os.path.join(args.docs, "*.pdf"))
-    return execute(found[0] if len(found) == 1 else None, args.docs, args.assumptions)
+    return execute(found[0] if len(found) == 1 else None, args.docs)
 
 
 if __name__ == "__main__":

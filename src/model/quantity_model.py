@@ -3,8 +3,8 @@
 1) 도면에서 읽은 값을 '입력 변수'로 등록한다. (cad_extracted.json)
 2) 입력 변수로 '계산 변수'(평균 길이, 벽 안쪽 길이 등)를 구한다.
 3) 모든 수량 행은 숫자가 아니라 변수식으로 쓴다. 예: 외곽폭*바닥두께*평균길이
-값을 바꿔 다시 계산할 수 있도록 같은 구조를 html 계산 엔진과 xlsx 이름 정의가 그대로 쓴다.
-산출서 값은 입력으로 쓰지 않는다. 도면에 없는 값만 ASSUMED로 사유와 함께 둔다.
+웹 화면의 계산 엔진이 같은 구조를 쓴다. 내려받는 파일은 이 모델의 값만 담는다.
+산출서 값은 입력으로 쓰지 않는다. 도면에 없는 값은 지정 규칙으로 계산하고, 규칙이 없는 값만 UNTRACED에 사유와 함께 둔다.
 """
 from __future__ import annotations
 
@@ -16,39 +16,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.common.rules import UNIT_WEIGHT, premium_rate, round3
 
-# 도면에 표기가 없는 입력. 코드에는 값을 두지 않는다. 사용자가 입력하거나, 기준 과업 값이 private/ 에 있으면 그 값을 쓴다.
-# 원본 PDF를 읽어 자동으로 채우지 않는다. 그러면 비교가 자기 자신과의 비교가 된다.
+# 도면에 표기가 없는 입력. 원본 PDF를 읽어 자동으로 채우지 않는다. 그러면 비교가 자기 자신과의 비교가 된다.
 UNTRACED: Dict[str, Dict[str, Any]] = {
-    "contraction_count": {"value": None, "note": "블록별 수축이음 개소. 도면에 위치 치수 없음"},
-    "wing_side_top": {"value": None, "note": "날개벽 유로폼 바깥 구간 폭. 도면 치수 표기 없음"},
-    "scaffold_offset": {"value": None, "note": "본체 비계 높이 공제. 도면 표기 없음"},
-    "wing_scaffold_h": {"value": None, "note": "날개벽 비계 높이. 도면 표기 없음"},
-    "wing_scaffold_side": {"value": None, "note": "날개벽 비계 측면 폭. 도면 표기 없음"},
-    "pvc_length": {"value": None, "note": "PVC 1개 길이. 도면 재료표는 범위만 표기"},
+    "scaffold_offset": {"value": 0.5, "note": "본체 비계 높이 공제. 도면 표기 없음, 별도 지정이 없으면 0.5m"},
 }
-REFERENCE_ASSUMPTIONS = "private/assumptions_reference.json"
-if os.path.exists(REFERENCE_ASSUMPTIONS):
-    with open(REFERENCE_ASSUMPTIONS, encoding="utf-8") as _f:
-        for _key, _value in json.load(_f).items():
-            UNTRACED[_key]["value"] = _value
-ASSUMPTION_FIELDS = {"contraction_count": "블록별 수축이음 개소 {B1, B2, B3}", "wing_side_top": "날개벽 유로폼 바깥 구간 폭(m)", "scaffold_offset": "본체 비계 높이 공제(m)",
-                     "wing_scaffold_h": "날개벽 비계 높이(m)", "wing_scaffold_side": "날개벽 비계 측면 폭(m)", "pvc_length": "PVC 1개 길이(m)"}
 BLOCK_PREFIX = {"B1": "블록1", "B2": "블록2", "B3": "블록3"}
 LOC_CODE = {"시점좌": "SL", "시점우": "SR", "종점좌": "EL", "종점우": "ER"}
 NAME_RE = re.compile(r"[가-힣A-Za-z_][가-힣A-Za-z0-9_]*")
-FUNCS = {"sin", "cos", "tan", "sqrt", "abs", "sign"}
-
-
-def apply_assumptions(path: str) -> None:
-    """사용자가 정한 가정값을 넣는다. 빠진 값이 있으면 이유를 알려 주고 멈춘다."""
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    absent = [f"{k} ({v})" for k, v in ASSUMPTION_FIELDS.items() if k not in data]
-    if absent:
-        raise ValueError("가정값 파일에 빠진 항목: " + ", ".join(absent))
-    for key in ASSUMPTION_FIELDS:
-        UNTRACED[key]["value"] = data[key]
-        UNTRACED[key]["note"] = f"{ASSUMPTION_FIELDS[key]}. 도면 표기 없음, 사용자 입력값"
+FUNCS = {"sin", "cos", "tan", "sqrt", "abs", "sign", "ceil"}
 
 
 def scope_code(scope: str) -> str:
@@ -84,7 +59,7 @@ class Engine:
 
         code = NAME_RE.sub(repl, formula).replace("^", "**")
         env = {"sin": lambda d: math.sin(math.radians(d)), "cos": lambda d: math.cos(math.radians(d)), "tan": lambda d: math.tan(math.radians(d)),
-               "sqrt": math.sqrt, "abs": abs, "sign": lambda v: 0.0 if abs(v) < 0.0005 else (1.0 if v > 0 else -1.0)}
+               "sqrt": math.sqrt, "abs": abs, "sign": lambda v: 0.0 if abs(v) < 0.0005 else (1.0 if v > 0 else -1.0), "ceil": lambda v: float(math.ceil(round(v, 6)))}
         return float(eval(code, {"__builtins__": {}}, env))  # noqa: S307 - 내부 생성 수식
 
     def numeric(self, formula: str, scope: Optional[str] = None, prefix: Optional[str] = None) -> str:
@@ -147,12 +122,7 @@ def register_global_vars(e: Engine, cad: Dict[str, Any]) -> None:
     e.inp("부직포가로", "부직포 가로", fabric["w_mm"] / 1000, "일반도(2) 배수상세 재료표")
     e.inp("부직포세로", "부직포 세로", fabric["h_mm"] / 1000, "일반도(2) 배수상세 재료표")
     e.inp("부직포장수", "날개벽 1곳의 부직포 수", fabric["ea_per_location"], "일반도(2) 배수상세 재료표", unit="장", digits=0)
-    u = UNTRACED
-    e.inp("비계공제", "본체 비계 높이에서 빼는 값", u["scaffold_offset"]["value"], u["scaffold_offset"]["note"], kind="assumed")
-    e.inp("날개비계높이", "날개벽 비계 높이", u["wing_scaffold_h"]["value"], u["wing_scaffold_h"]["note"], kind="assumed")
-    e.inp("날개비계측면", "날개벽 비계 옆쪽 폭", u["wing_scaffold_side"]["value"], u["wing_scaffold_side"]["note"], kind="assumed")
-    e.inp("날개외측폭", "날개벽 거푸집 바깥 구간 폭", u["wing_side_top"]["value"], u["wing_side_top"]["note"], kind="assumed")
-    e.inp("PVC길이", "배수관 1개 길이", u["pvc_length"]["value"], u["pvc_length"]["note"], kind="assumed")
+    e.inp("비계공제", "본체 비계 높이에서 빼는 값", UNTRACED["scaffold_offset"]["value"], UNTRACED["scaffold_offset"]["note"], kind="assumed")
 
     # 계산 변수
     e.der("벽안높이", "벽 안쪽 높이 (삼각형 아래)", "안쪽높이-헌치세로")
@@ -170,6 +140,11 @@ def register_global_vars(e: Engine, cad: Dict[str, Any]) -> None:
     e.der("사각벽", "비스듬한 끝의 벽 두께", "벽두께/코사인")
     e.der("사각버림폭", "비스듬한 끝의 버림 폭", "버림폭/코사인")
     e.der("경사빗길이", "날개벽 경사면 길이", "sqrt(날개경사길이^2+날개아래높이^2)")
+    # 도면에 표기가 없어 지정 규칙으로 계산하는 값
+    e.der("날개비계높이", "날개벽 비계 높이 (날개벽 높이 − 비계공제)", "날개전체높이-비계공제")
+    e.der("날개비계측면", "날개벽 비계 옆쪽 폭 (날개두께 + 1.2 + 1.2)", "날개두께+1.2+1.2")
+    e.der("날개외측폭", "날개벽 거푸집 바깥 구간 폭 (날개두께)", "날개두께")
+    e.der("PVC길이", "배수관 1개 길이 (날개두께)", "날개두께")
 
 
 def register_block(e: Engine, cad: Dict[str, Any], name: str) -> None:
@@ -179,10 +154,9 @@ def register_block(e: Engine, cad: Dict[str, Any], name: str) -> None:
     source = "일반도(1) 평면도 · 치수 문자"
     e.inp("왼쪽길이", f"Block {n} 왼쪽 길이", rec["left"], source, prefix=p)
     e.inp("오른쪽길이", f"Block {n} 오른쪽 길이", rec["right"], source, prefix=p)
-    count = UNTRACED["contraction_count"]
-    e.inp("수축이음개소", f"Block {n} 수축이음 개소", count["value"][name], count["note"], kind="assumed", unit="곳", digits=0, prefix=p)
     D = lambda nm, lab, f, **kw: e.der(nm, f"Block {n} {lab}", f, prefix=p, **kw)  # noqa: E731
     D("평균길이", "평균 길이", "(왼쪽길이+오른쪽길이)/2", rnd=None, digits=-4)
+    D("수축이음개소", "수축이음 개소 (평균길이 ÷ 6 올림)", "ceil(평균길이/6)", rnd=None, unit="곳", digits=0)
     D("사각부호", "긴 쪽 표시 (왼쪽 1, 오른쪽 −1, 같음 0)", "sign(왼쪽길이-오른쪽길이)", rnd=None, unit="", digits=0)
     D("왼쪽안길이", "왼쪽 벽 안쪽 길이", "왼쪽길이-사각부호*벽두께*기울기")
     D("오른쪽안길이", "오른쪽 벽 안쪽 길이", "오른쪽길이+사각부호*벽두께*기울기")
@@ -329,7 +303,7 @@ def build_rebar(e: Engine, cad: Dict[str, Any]) -> Dict[str, Any]:
     """재료표 행이 입력 변수다. 총길이 × 1m 무게로 재계산하고 할증은 호칭경 규칙으로 판정한다."""
     dias = sorted({b["dia"] for s in cad["rebar"].values() for b in s["bars"]}, key=lambda d: -int(d[1:]))
     for dia in dias:
-        e.inp(f"무게_{dia}", f"{dia} 철근 1m 무게", UNIT_WEIGHT[dia], "KS D 3504 (도면 재료표 값과 일치 확인)", kind="rule", unit="kg/m")
+        e.inp(f"무게_{dia}", f"{dia} 철근 1m 무게", UNIT_WEIGHT[dia], "KS D 3504", kind="rule", unit="kg/m")
         e.inp(f"할증_{dia}", f"{dia} 철근 할증률", premium_rate(dia), "S22 이상 6%, S19 이하 3% (2026-11-05 확정)", kind="rule", unit="", digits=2)
     bars: List[Dict[str, Any]] = []
     records: List[Dict[str, Any]] = []
@@ -347,7 +321,7 @@ def build_rebar(e: Engine, cad: Dict[str, Any]) -> Dict[str, Any]:
             net_f = f"{var}*무게_{dia}/1000"
             gross_f = f"{var}*무게_{dia}/1000*(1+할증_{dia})"
             for scope in scopes:
-                records.append({"scope": scope, "dia": dia, "length_m": round3(length), "unit_weight": UNIT_WEIGHT[dia], "net_t": round3(e.ev(net_f)), "rate": premium_rate(dia),
+                records.append({"scope": scope, "dia": dia, "length_m": round3(length), "unit_weight": e.env[f"무게_{dia}"], "net_t": round3(e.ev(net_f)), "rate": e.env[f"할증_{dia}"],
                                 "gross_t": round3(e.ev(gross_f)), "sheet": sheet, "net_formula": net_f, "gross_formula": gross_f, "net_expr": e.numeric(net_f), "gross_expr": e.numeric(gross_f)})
     return {"records": records, "bars": bars}
 
@@ -423,14 +397,15 @@ def trace_dependencies(variables: List[Dict[str, Any]], lines: List[Dict[str, An
 
 
 def build_model(cad: Dict[str, Any], overrides: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
-    """overrides는 시험용. 도면을 고치지 않고 입력 변수만 바꿔 계산한다(html·xlsx와 대조)."""
+    """overrides는 웹에서 고친 입력 변수다. 도면을 고치지 않고 그 값으로 계산하며, 출처에 고친 값임을 남긴다."""
     engine = Engine()
     if overrides:
         original_inp = engine.inp
 
         def patched(name: str, label: str, value: float, source: str, kind: str = "drawing", unit: str = "m", digits: int = 3, prefix: Optional[str] = None) -> None:
             full = f"{prefix}_{name}" if prefix else name
-            original_inp(name, label, overrides.get(full, value), source, kind, unit, digits, prefix)
+            edited = full in overrides and abs(overrides[full] - value) > 1e-9
+            original_inp(name, label, overrides[full] if edited else value, f"웹에서 수정한 값 (원래 {value:g})" if edited else source, kind, unit, digits, prefix)
 
         engine.inp = patched  # type: ignore[method-assign]
     register_global_vars(engine, cad)
@@ -449,18 +424,16 @@ def build_model(cad: Dict[str, Any], overrides: Optional[Dict[str, float]] = Non
 
 
 class QuantityModelAgent:
-    def __init__(self, cad_path: str = "data/cad_extracted.json", output_path: str = "data/quantity_model.json", assumptions_path: str = "") -> None:
+    def __init__(self, cad_path: str = "data/cad_extracted.json", output_path: str = "data/quantity_model.json", reference: bool = False) -> None:
         self.cad_path = cad_path
         self.output_path = output_path
-        self.assumptions_path = assumptions_path
+        self.reference = reference
 
     def run(self) -> Dict[str, Any]:
         with open(self.cad_path, encoding="utf-8") as f:
             cad = json.load(f)
-        if self.assumptions_path:
-            apply_assumptions(self.assumptions_path)
         model = build_model(cad)
-        model["assumptions_from"] = "user" if self.assumptions_path else "reference"
+        model["reference"] = self.reference  # 재료 규격을 코드 값으로 보여도 되는 기준 과업인가
         os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
         with open(self.output_path, "w", encoding="utf-8") as out:
             json.dump(model, out, ensure_ascii=False, indent=1)

@@ -4,8 +4,9 @@
 원본 산출서가 있으면 맨 앞에 비교 결과를 보여 주고, 없으면 도면 산출 결과만 보여 준다.
 글자색: 붉은색은 입력값을 받는 칸(문서에서 그 값이 처음 나오는 곳) 한 곳뿐이다. 이후 인용과 계산은 파란색, 가정값과 규칙은 검은색이다.
 여러 공종에 쓰는 입력값은 앞쪽 공통 표에, 나머지는 처음 쓰는 공종 안에 둔다.
-변수표의 값을 바꾸면 페이지 안의 계산 엔진이 전 공종을 다시 계산한다. 엔진은 파이썬 모델과 같은 규칙이며,
+웹 화면용(frozen=False): 변수표의 값을 바꾸면 페이지 안의 계산 엔진이 전 공종을 다시 계산한다. 엔진은 파이썬 모델과 같은 규칙이며,
 tests/test_parametric.py가 두 결과를 대조한다.
+내려받는 파일용(frozen=True): 입력칸과 스크립트가 없어 값을 고칠 수 없고, 확인 사항, 검산, 설명, 원본 비교를 싣지 않는다.
 수량 숫자를 이 파일에 직접 적지 않는다. 그림은 도면 실측 치수로 축척에 맞춰 그린다. (평면도의 날개벽만 개략)
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ BODY = ["B1", "B2", "B3"]
 BODY_NAME = {"B1": "Block 1", "B2": "Block 2", "B3": "Block 3"}
 LOC_CODE = {"시점좌": "SL", "시점우": "SR", "종점좌": "EL", "종점우": "ER"}
 NAME_RE = re.compile(r"[가-힣A-Za-z_][가-힣A-Za-z0-9_]*")
-FUNCS = {"sin", "cos", "tan", "sqrt", "abs", "sign"}
+FUNCS = {"sin", "cos", "tan", "sqrt", "abs", "sign", "ceil"}
 TOKEN_RE = re.compile(r"[가-힣A-Za-z_][가-힣A-Za-z0-9_]*|\d+(?:\.\d+)?")
 NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 # 입력칸의 글자색: i = 붉은색(도면에서 읽어 입력), a = 검은색(도면에 없는 가정값·규칙)
@@ -83,7 +84,8 @@ def esc(text: str) -> str:
 
 class ReadableBoqAgent:
     def __init__(self, cad_path: str = "data/cad_extracted.json", model_path: str = "data/quantity_model.json", alt_path: str = "output/alternative_boq.json",
-                 issues_path: str = "reports/audit_issues.json", output_path: str = "") -> None:
+                 issues_path: str = "reports/audit_issues.json", output_path: str = "", frozen: bool = False) -> None:
+        self.frozen = frozen
         for name, path in (("cad", cad_path), ("model", model_path), ("alt", alt_path), ("audit", issues_path)):
             with open(path, encoding="utf-8") as f:
                 setattr(self, name, json.load(f))
@@ -91,9 +93,10 @@ class ReadableBoqAgent:
         self.env: Dict[str, float] = dict(self.model["env"])
         self.digits: Dict[str, int] = self.model["digits"]
         self.summary = {s["key"]: s for s in self.alt["summary"]}
-        self.has_original = self.audit["original_status"] == "provided"
-        self.originals: Dict[str, float] = {f"원본_{k}": s["original"] for k, s in self.summary.items() if s["original"] is not None}
+        self.has_original = not frozen and self.audit["original_status"] == "provided"
+        self.originals: Dict[str, float] = {}
         if self.has_original:
+            self.originals = {f"원본_{k}": s["original"] for k, s in self.summary.items() if s["original"] is not None}
             self.originals["원본_철근재료"] = self.audit["statistics"]["rebar"]["p3_gross"]
         self.result = {c["key"]: c for c in self.audit["comparison"]}
         self.env.update(self.originals)
@@ -121,6 +124,10 @@ class ReadableBoqAgent:
                     self.first_place[name] = place
         self.common = [x for x in self.model["variables"] if x["kind"] == "drawing" and self.is_common(x["name"])]
         self.common.sort(key=lambda x: (-len(self.usage[x["name"]]["keys"]), -self.usage[x["name"]]["lines"]))
+
+    def web(self, *parts: str) -> str:
+        """웹 화면에만 싣는 조각(설명, 검산). 내려받는 파일에는 넣지 않는다."""
+        return "" if self.frozen else "".join(parts)
 
     # ---------------------------------------------------------- 수식
     def ev(self, formula: str) -> float:
@@ -231,26 +238,25 @@ class ReadableBoqAgent:
         s = self.summary[key]
         names = {"Block 1": "합_B1", "Block 2": "합_B2", "Block 3": "합_B3", "날개벽": "군_날개벽"}
         parts = [(g, f"{names[g]}_{key}") for g, v in s["groups"].items() if v is not None]
-        origin = f'<span class="diff" data-fx="총_{key}-원본_{key}" data-d="3" data-sign="1">원본과 {s["delta"]:+,.3f}</span>' if s["delta"] else ""
-        return f'<div class="final"><span class="final-label">{" + ".join(g for g, _ in parts)}</span><div>{self.calc_span("+".join(n for _, n in parts), 3, " " + unit)}</div>{origin}</div>'
+        origin = f'<span class="diff" data-fx="총_{key}-원본_{key}" data-d="3" data-sign="1">원본과 {s["delta"]:+,.3f}</span>' if s["delta"] and self.has_original else ""
+        return f'<div class="final"><span class="final-label">{" + ".join(g for g, _ in parts)}</span><div>{self.calc_span("+".join(n for _, n in parts), 3, " " + unit)}</div>{self.web(origin)}</div>'
 
     def note(self, needle: str, text: str) -> str:
+        if self.frozen:
+            return ""
         i = next((x for x in self.audit["issues"] if needle in x["title"] and x["status"] != "UNEXPLAINED"), None)
         if i is None:
             return ""
         tag = "원본과 다른 곳"
         return f'<div class="callout"><strong>{tag} · {i["issue_id"]}</strong><p>{text}</p><p class="meta">원본 {i["boq_value"]} → 대안 {i["corrected_value"]} (산출서 {", ".join(map(str, i["boq_pages"]))}쪽)</p></div>'
 
-    def check_list(self, card: str, items: Sequence[str]) -> str:
-        rows = "".join(f'<li><label><input type="checkbox" id="chk-{card}-{n}" class="chk"> <span>{t}</span></label></li>' for n, t in enumerate(items))
-        return f'<div class="review"><h4>도면에서 확인</h4><ul>{rows}</ul></div>'
-
     def var_row(self, v: Dict[str, Any]) -> str:
         """입력칸 한 줄. 이 변수의 붉은색은 문서 전체에서 여기뿐이다."""
         value = fmt_var(v["value"], v["digits"] if v["digits"] != -4 else 3)
         cls = INPUT_CLASS[v["kind"]]
         self.placed.add(v["name"])
-        return (f'<th scope="row" class="vname k-{cls}">{esc(v["name"])}</th><td>{esc(v["label"])}</td><td class="in"><input type="number" step="any" class="num k-{cls}" id="v-{esc(v["name"])}" data-var="{esc(v["name"])}" value="{value}" aria-label="{esc(v["name"])}"></td><td>{esc(v["unit"])}</td>')
+        box = f'<span class="num k-{cls}" id="v-{esc(v["name"])}">{value}</span>' if self.frozen else f'<input type="number" step="any" class="num k-{cls}" id="v-{esc(v["name"])}" data-var="{esc(v["name"])}" value="{value}" aria-label="{esc(v["name"])}">'
+        return (f'<th scope="row" class="vname k-{cls}">{esc(v["name"])}</th><td>{esc(v["label"])}</td><td class="in">{box}</td><td>{esc(v["unit"])}</td>')
 
     def local_inputs(self, card: str, wing: bool = False) -> str:
         """이 공종에서 처음 쓰는 도면 입력값을 그 자리에서 받는다."""
@@ -348,7 +354,7 @@ class ReadableBoqAgent:
         return f'<figure class="fig">{svg}<figcaption>{caption}</figcaption></figure>'
 
     def plan_svg(self) -> str:
-        b = self.cad["plan"]["blocks"]
+        b = {n: {"left": self.env[f"{p}_왼쪽길이"], "right": self.env[f"{p}_오른쪽길이"]} for n, p in (("B1", "블록1"), ("B2", "블록2"), ("B3", "블록3"))}
         s = 15.0
         ox, oy = 150.0, 130.0
         w = self.W * s
@@ -377,8 +383,8 @@ class ReadableBoqAgent:
         g.append(f'<text x="{x_mid0 - 1:.1f}" y="{oy + w + 32:.1f}" class="dim" text-anchor="middle">이음</text><text x="{x_e0 - 1:.1f}" y="{oy + w + 32:.1f}" class="dim" text-anchor="middle">이음</text>')
         g.append(f'<text x="{ox - 8:.1f}" y="{oy + w / 2 + 4:.1f}" class="dim" text-anchor="end">외곽폭 {self.W:.3f}</text>')
         plan = self.cad["plan"]
-        return (f'<figure class="fig wide"><div class="scroll"><svg viewBox="0 0 960 330" class="minw" role="img" aria-label="암거 평면도">' + "".join(g) +
-                f'</svg></div><figcaption>위에서 내려다본 모습. 총길이 {plan["total_length_m"]:.3f}m = 블록 평균 길이 3개 + 이음 {plan["joint_gap_mm"]:.0f}mm 2곳. 위쪽이 왼쪽 벽, 아래쪽이 오른쪽 벽이다. 날개벽 선은 위치만 나타낸 개략이다.</figcaption></figure>')
+        caption = "" if self.frozen else f'<figcaption>위에서 내려다본 모습. 총길이 {plan["total_length_m"]:.3f}m = 블록 평균 길이 3개 + 이음 {plan["joint_gap_mm"]:.0f}mm 2곳. 위쪽이 왼쪽 벽, 아래쪽이 오른쪽 벽이다. 날개벽 선은 위치만 나타낸 개략이다.</figcaption>'
+        return f'<figure class="fig wide"><div class="scroll"><svg viewBox="0 0 960 330" class="minw" role="img" aria-label="암거 평면도">' + "".join(g) + f'</svg></div>{caption}</figure>'
 
     def skew_svg(self) -> str:
         b = self.cad["plan"]["blocks"]["B1"]
@@ -409,11 +415,11 @@ class ReadableBoqAgent:
              f'<text x="{ox + flat * s + slope * s * 0.38:.1f}" y="{oy + 90}" class="tag" text-anchor="middle">사다리꼴</text>',
              f'<text x="{ox + flat * s / 2:.1f}" y="{oy + 90}" class="dim" text-anchor="middle">네모</text>']
         return (f'<figure class="fig wing-fig"><svg viewBox="0 0 470 {oy + root * s + 30:.0f}" role="img" aria-label="날개벽 정면">' + "".join(g) +
-                "</svg><figcaption>날개벽을 앞에서 본 모습. 네모 하나와 사다리꼴 하나로 나눈다.</figcaption></figure>")
+                "</svg><figcaption>" + ("날개벽 정면" if self.frozen else "날개벽을 앞에서 본 모습. 네모 하나와 사다리꼴 하나로 나눈다.") + "</figcaption></figure>")
 
     # ---------------------------------------------------------- 카드
     def card(self, cid: str, title: str, intro: str, *parts: str) -> str:
-        return f'<section class="card" id="{cid}"><h2>{title}</h2><p class="intro">{intro}</p>' + "".join(parts) + "</section>"
+        return f'<section class="card" id="{cid}"><h2>{title}</h2>{self.web(f'<p class="intro">{intro}</p>')}' + "".join(parts) + "</section>"
 
     def card_concrete(self) -> str:
         tri = "헌치가로*헌치세로/2"
@@ -422,23 +428,21 @@ class ReadableBoqAgent:
         rows += f'<tr class="total"><th scope="row">단면넓이</th>{self.total_cell("단면넓이", 4)}</tr>'
         step1 = f'<h3>1단계 · 단면을 조각내어 넓이를 더한다</h3><div class="scroll"><table class="matrix narrow"><thead><tr><th>조각 / 변수식</th><th>넓이 (㎡)</th></tr></thead><tbody>{rows}</tbody></table></div>'
         check = f'<p class="line">다른 방법으로 검산: 큰 네모 − 빈 공간 + 삼각형 2개 → {self.calc_span("외곽폭*외곽높이-안쪽폭*안쪽높이+2*(헌치가로*헌치세로/2)", 4, " ㎡")}</p>'
-        step2 = "<h3>2단계 · 조각마다 길이를 곱한다</h3><p>블록마다 단면은 같고 길이만 다르다. 비스듬한 블록의 벽 길이는 바깥쪽과 안쪽의 평균이다.</p>" + self.matrix("concrete")
+        step2 = "<h3>2단계 · 조각마다 길이를 곱한다</h3>" + self.web("<p>블록마다 단면은 같고 길이만 다르다. 비스듬한 블록의 벽 길이는 바깥쪽과 안쪽의 평균이다.</p>") + self.matrix("concrete")
         quick = []
         for b, name in (("B1", "블록1"), ("B2", "블록2"), ("B3", "블록3")):
             line = self.lines(b, "concrete")
             parapet = f' + 난간벽 <b data-line-val="{line[-1]["id"]}">{line[-1]["value"]:.3f}</b>' if len(line) == 7 else ""
             quick.append(f"<li>{BODY_NAME[b]}: {self.calc_span(f'단면넓이*{name}_평균길이')}{parapet} → 표 합계 <b data-fx=\"합_{b}_concrete\" data-d=\"3\">{num(self.env[f'합_{b}_concrete'])}</b></li>")
         quick_html = '<div class="quick"><h4>암산 검산: 단면넓이 × 평균길이</h4><ul>' + "".join(quick) + '</ul><p class="meta">표는 줄마다 반올림해서 0.001 정도 차이가 날 수 있다.</p></div>'
-        wing = ("<h3>3단계 · 날개벽</h3><p>벽을 앞에서 본 넓이에 날개두께를 곱하고, 뒤쪽 모서리 삼각형을 더한다. 삼각형 넓이에는 계산기의 sin을 쓴다.</p>" + self.local_inputs("concrete", True) + self.wing_svg() + self.wing_matrix("concrete") + self.wing_sum("concrete"))
+        wing = ("<h3>3단계 · 날개벽</h3>" + self.web("<p>벽을 앞에서 본 넓이에 날개두께를 곱하고, 뒤쪽 모서리 삼각형을 더한다. 삼각형 넓이에는 계산기의 sin을 쓴다.</p>") + self.local_inputs("concrete", True) + self.wing_svg() + self.wing_matrix("concrete") + self.wing_sum("concrete"))
         return self.card("concrete", "구조물 콘크리트", "콘크리트 양은 부피다. 부피는 단면 넓이 × 길이다.",
                          self.vars_for_card(["외곽폭", "외곽높이", "안쪽폭", "안쪽높이", "천장두께", "바닥두께", "벽두께", "헌치가로", "헌치세로"], "concrete"),
-                         self.section_svg("pieces", "표준단면을 조각낸 그림. 치수 단위는 m"), step1, check, step2, quick_html, wing, self.final("concrete", "㎥"),
-                         self.check_list("concrete", ["일반도(1) 표준단면도: 외곽폭, 외곽높이, 천장두께, 바닥두께, 벽두께 값이 변수표와 같은지", f"일반도(1) 표준단면도: 삼각형(헌치) {self.hw * 1000:.0f}X{self.env['헌치세로'] * 1000:.0f}이 도면과 같은 곳에 있는지 (위쪽 {self.cad['section']['haunch_count_top']}곳, 아래쪽 {self.cad['section']['haunch_count_bottom']}곳)", "일반도(1) 평면도: 블록별 왼쪽길이, 오른쪽길이", "일반도(2) 날개벽 정면도: 날개전체길이, 날개전체높이, 날개끝높이, 날개경사길이, 날개평평길이"]))
+                         self.section_svg("pieces", "표준단면을 조각낸 그림. 치수 단위는 m"), step1, self.web(check), step2, self.web(quick_html), wing, self.final("concrete", "㎥"))
 
     def card_lean(self) -> str:
         return self.card("lean", "버림 콘크리트", "본체를 놓기 전에 바닥을 고르는 얇은 콘크리트다. 폭 × 두께 × 길이로 구한다. 비스듬한 끝에서는 조금 더 길어진다.",
-                         self.vars_for_card(["버림폭", "버림두께"], "lean"), self.section_svg("lean", "주황색이 버림 콘크리트"), self.matrix("lean"), self.final("lean", "㎥"),
-                         self.check_list("lean", ["일반도(1) 표준단면도: 버림이 본체 좌우로 나온 폭과 두께"]))
+                         self.vars_for_card(["버림폭", "버림두께"], "lean"), self.section_svg("lean", "주황색이 버림 콘크리트"), self.matrix("lean"), self.final("lean", "㎥"))
 
     def card_form(self) -> str:
         quick = []
@@ -448,39 +452,34 @@ class ReadableBoqAgent:
             quick.append(f"<li>{BODY_NAME[b]}: {self.calc_span(f'미터당거푸집*{name}_평균길이')} + 끝면 <b class=\"k-c\">{ends:.3f}</b>" + (f" + 난간벽 <b class=\"k-c\">{par:.3f}</b>" if par else "") + f" → 표 합계 <b data-fx=\"합_{b}_form_normal\" data-d=\"3\">{num(self.env[f'합_{b}_form_normal'])}</b></li>")
         quick_html = f'<div class="quick"><h4>암산 검산: 길이 1m에 필요한 판 넓이</h4><p>{self.calc_span("외곽높이*2+벽안높이*2+천장밑폭+빗면*2", 3, " ㎡")}</p><ul>' + "".join(quick) + "</ul></div>"
         return self.card("form", "유로폼 거푸집 (보통)", "거푸집은 콘크리트가 굳을 때까지 모양을 잡아 주는 판이다. 콘크리트가 판에 닿는 면을 모두 찾아 넓이를 더한다. 윗면과 안쪽 바닥은 판을 대지 않는다.",
-                         self.vars_for_card(["천장밑폭", "벽안높이", "빗면"], "form"), self.section_svg("form", "주황색 선이 판을 대는 면"), self.matrix("form_normal"), quick_html,
-                         "<h3>날개벽</h3>", self.local_inputs("form", True), self.wing_matrix("form_normal"), '<p class="meta">뒷길이는 날개두께 때문에 각도에 따라 앞면보다 길거나 짧다. 뒤빗면은 각도에 따라 달라진다.</p>', self.wing_sum("form_normal"), self.final("form_normal", "㎡"),
-                         self.check_list("form", ["일반도(1) 표준단면도: 벽안높이 = 안쪽높이 − 헌치세로, 천장밑폭 = 안쪽폭 − 헌치가로 × 2", "일반도(2) 날개벽 정면도와 평면도: 앞면과 뒷면 길이"]))
+                         self.vars_for_card(["천장밑폭", "벽안높이", "빗면"], "form"), self.section_svg("form", "주황색 선이 판을 대는 면"), self.matrix("form_normal"), self.web(quick_html),
+                         "<h3>날개벽</h3>", self.local_inputs("form", True), self.wing_matrix("form_normal"), self.web('<p class="meta">뒷길이는 날개두께 때문에 각도에 따라 앞면보다 길거나 짧다. 뒤빗면은 각도에 따라 달라진다.</p>'), self.wing_sum("form_normal"), self.final("form_normal", "㎡"))
 
     def card_form_simple(self) -> str:
         return self.card("form-simple", "유로폼 거푸집 (간단)", "버림 콘크리트의 옆면에 대는 낮은 판이다. 둘레를 돌며 버림두께를 곱한다.", self.local_inputs("form-simple"), self.matrix("form_simple"), self.final("form_simple", "㎡"))
 
     def card_shoring(self) -> str:
         return self.card("shoring", "동바리", "천장이 굳을 때까지 아래에서 받치는 기둥들이다. 받치는 안쪽 빈 공간의 부피로 센다.",
-                         self.local_inputs("shoring"), self.section_svg("shoring", "주황색 공간이 동바리가 서는 곳"), self.matrix("shoring"), "<h3>날개벽</h3>", self.local_inputs("shoring", True), self.wing_matrix("shoring"), self.wing_sum("shoring"), self.final("shoring", "㎥"),
-                         self.check_list("shoring", ["표준단면도 안쪽폭 × 안쪽높이", "길이는 벽 안쪽 길이의 평균인지"]))
+                         self.local_inputs("shoring"), self.section_svg("shoring", "주황색 공간이 동바리가 서는 곳"), self.matrix("shoring"), "<h3>날개벽</h3>", self.local_inputs("shoring", True), self.wing_matrix("shoring"), self.wing_sum("shoring"), self.final("shoring", "㎥"))
 
     def card_scaffold(self) -> str:
         return self.card("scaffold", "시스템 비계", "벽 바깥쪽에서 일할 때 딛는 발판이다. 높이 × 길이로 넓이를 구한다.",
-                         self.vars_for_card(["비계공제", "날개비계높이", "날개비계측면"], "scaffold"), self.section_svg("scaffold", "주황색 선이 비계를 세우는 곳"), self.matrix("scaffold"), "<h3>날개벽</h3>", self.local_inputs("scaffold", True), self.wing_matrix("scaffold"), self.wing_sum("scaffold"), self.final("scaffold", "㎡"),
-                         self.check_list("scaffold", ["비계공제, 날개비계높이, 날개비계측면은 도면에 표기가 없는 가정값이다. 근거를 따로 확인"]))
+                         self.vars_for_card(["비계공제", "날개비계높이", "날개비계측면"], "scaffold"), self.section_svg("scaffold", "주황색 선이 비계를 세우는 곳"), self.matrix("scaffold"), "<h3>날개벽</h3>", self.local_inputs("scaffold", True), self.wing_matrix("scaffold"), self.wing_sum("scaffold"), self.final("scaffold", "㎡"))
 
     def card_spacer(self) -> str:
         scopes, _ = self.wing_names()
-        wing = ('<h3>날개벽</h3><p>날개벽은 전부 벽체용이다. 그래서 스페이서 넓이가 거푸집 넓이와 같다.</p>' + self.local_inputs("spacer", True) + self.wing_matrix("spacer_wall") + self.wing_sum("spacer_wall"))
+        wing = ('<h3>날개벽</h3>' + self.web('<p>날개벽은 전부 벽체용이다. 그래서 스페이서 넓이가 거푸집 넓이와 같다.</p>') + self.local_inputs("spacer", True) + self.wing_matrix("spacer_wall") + self.wing_sum("spacer_wall"))
         _ = scopes
         return self.card("spacer", "스페이서", "철근이 거푸집에 닿지 않게 띄워 주는 받침이다. 넓이로 세며, 거푸집 표의 값을 다시 쓴다. 벽처럼 세운 면과 슬래브처럼 눕힌 면으로 나눈다.",
                          self.local_inputs("spacer"), "<h3>벽체용</h3>", self.matrix("spacer_wall"), "<h3>슬래브·기초용</h3>", self.matrix("spacer_slab"),
                          self.note("체적이 합산", "날개벽 스페이서 식의 끝에 동바리 부피(㎥)가 더해져 있었다. 넓이(㎡)에 부피를 더할 수 없으므로 뺐다."), wing,
-                         self.final("spacer_wall", "㎡ (벽체용)"), self.final("spacer_slab", "㎡ (슬래브·기초용)"),
-                         self.check_list("spacer", ["위 거푸집 표의 값이 그대로 옮겨졌는지", "날개벽 스페이서 = 날개벽 거푸집인지"]))
+                         self.final("spacer_wall", "㎡ (벽체용)"), self.final("spacer_slab", "㎡ (슬래브·기초용)"))
 
     def card_waterproof(self) -> str:
         return self.card("waterproof", "아스팔트 방수와 양생", "방수는 흙에 닿는 겉면에 칠한다. 윗면과 양쪽 벽 바깥면을 더한다. 양생은 윗면 콘크리트를 굳히는 동안 보호하는 작업이라 윗면 넓이만 센다.",
                          self.local_inputs("waterproof"), self.section_svg("waterproof", "주황색 선이 방수를 칠하는 면"), self.matrix("waterproof"), "<h3>날개벽 (흙에 닿는 뒷면)</h3>", self.local_inputs("waterproof", True), self.wing_matrix("waterproof"),
                          self.note("방수면적", "원본은 각도가 다른 4곳에 같은 숫자를 썼고, 이 값은 도면에 없다. 대안은 거푸집 뒷면 넓이와 같게 맞췄다."),
-                         self.wing_sum("waterproof"), self.final("waterproof", "㎡"), "<h3>콘크리트 양생</h3>", self.matrix("curing"), self.final("curing", "㎡"),
-                         self.check_list("waterproof", ["일반도(2) 방수처리 상세: 뒷면 방수 범위"]))
+                         self.wing_sum("waterproof"), self.final("waterproof", "㎡"), "<h3>콘크리트 양생</h3>", self.matrix("curing"), self.final("curing", "㎡"))
 
     def card_joint(self) -> str:
         one = [("sealant", "실런트", "m"), ("styrofoam", "스티로폼", "㎡"), ("waterstop", "지수판", "m"), ("rain_wall", "우수유입방지벽", "㎥"), ("dowel", "다웰바", "EA")]
@@ -494,25 +493,29 @@ class ReadableBoqAgent:
         items = "".join(f"<li>{name}: {self.calc_span(f'합_B2_{key}*2', 3, ' ' + unit)}</li>" for key, name, unit in one)
         return self.card("joint", "신축이음", f"블록과 블록 사이 틈({self.cad['plan']['joint_gap_mm']:.0f}mm)이 물을 막고 함께 움직이도록 넣는 재료들이다. 이음은 Block 1-2 사이와 Block 2-3 사이 2곳이고, 두 곳이 똑같다. 한 곳만 계산해 2를 곱한다.",
                          self.vars_for_card(["방지벽폭", "방지벽높이", "다웰간격", "지수판가로", "지수판세로"], "joint"), self.section_svg("joint", "이음을 정면에서 본 그림"), table, f'<div class="quick"><h4>이음 2곳 합계</h4><ul>{items}</ul></div>',
-                         self.note("내측 실런트", "원본은 안쪽 둘레를 삼각형 없이 셌다. 위쪽 모서리에 삼각형이 있어 실제 둘레는 더 짧다."),
-                         self.check_list("joint", ["일반도(1) 신축이음 상세: 지수판, 실런트, 채움재, 방지벽 규격", "일반도(1) 시공이음 상세: 다웰바 지름, 간격, 길이", "다웰 캡과 녹막이 페인트가 다웰바 단가에 포함되는지"]))
+                         self.note("내측 실런트", "원본은 안쪽 둘레를 삼각형 없이 셌다. 위쪽 모서리에 삼각형이 있어 실제 둘레는 더 짧다."))
 
     def card_construction(self) -> str:
         return self.card("construction-joint", "시공이음과 수축이음", "시공이음은 바닥을 먼저 치고 벽을 나중에 칠 때 생기는 벽 위아래의 경계다. 수축이음은 벽의 균열을 한곳으로 모으려고 일부러 만든 줄이다.",
-                         self.local_inputs("construction-joint"), "<h3>시공이음 면정리 (넓이)</h3>", self.matrix("joint_clean"), self.final("joint_clean", "㎡"), "<h3>수팽창성 지수제 (길이)</h3>", self.matrix("swell"), self.final("swell", "m"), "<h3>수축이음 (길이)</h3>", self.matrix("contraction"), self.final("contraction", "m"),
-                         self.check_list("construction", ["수축이음개소는 도면에 표기가 없는 가정값이다. 근거를 따로 확인"]))
+                         self.local_inputs("construction-joint"), "<h3>시공이음 면정리 (넓이)</h3>", self.matrix("joint_clean"), self.final("joint_clean", "㎡"), "<h3>수팽창성 지수제 (길이)</h3>", self.matrix("swell"), self.final("swell", "m"), "<h3>수축이음 (길이)</h3>", self.matrix("contraction"), self.final("contraction", "m"))
 
     def card_drain(self) -> str:
         spec = self.model["pvc_spec"]
         return self.card("drain", "날개벽 배수", "날개벽 뒤 물이 빠지도록 벽을 뚫어 넣는 관과, 흙이 막지 못하게 씌우는 천이다. 한 곳에 2개씩, 날개벽 4곳에 넣는다.",
                          self.vars_for_card(["PVC길이", "배수관개수", "부직포가로", "부직포세로", "부직포장수"], "drain", True), "<h3>PVC 배수관 (길이)</h3>", self.wing_matrix("pvc"), self.wing_sum("pvc"), self.final("pvc", "m"),
                          self.note("PVC", f"원본은 쪽마다 관경이 달랐다. 도면 재료표의 {esc(spec)}을 따라 φ{self.model['pvc_dia_mm']:.0f}로 통일했다. 길이는 그대로다."),
-                         "<h3>부직포 (넓이)</h3>", self.wing_matrix("fabric"), self.wing_sum("fabric"), self.final("fabric", "㎡"),
-                         self.check_list("drain", ["일반도(2) 배수상세 재료표: 배수관 개수, 부직포 크기와 장수", "도면 L=600~300과 PVC길이의 관계"]))
+                         "<h3>부직포 (넓이)</h3>", self.wing_matrix("fabric"), self.wing_sum("fabric"), self.final("fabric", "㎡"))
+
+    def bar_input(self, row: int, field: str, value: str, label: str) -> str:
+        if self.frozen:
+            return f'<td class="in"><span class="num k-i">{value}</span></td>'
+        step = "any" if field == "L" else "1"
+        return f'<td class="in"><input type="number" step="{step}" class="num k-i" data-bar="{row}" data-field="{field}" value="{value}" aria-label="{esc(label)}"></td>'
 
     def card_rebar(self) -> str:
         rb = self.model["rebar"]
         first = rb["bars"][0]
+        opened = " open" if self.frozen else ""
         example = (f'<div class="quick"><h4>철근 한 줄 읽는 법 ({esc(first["mark"])}, {first["dia"]})</h4><p>총길이 = 1개 길이 × 개수. 도면 재료표의 값을 그대로 넣는다.</p>'
                    "<p>같은 굵기의 총길이를 모두 더하고 1m 무게를 곱한 뒤 1000으로 나누면 톤(t)이 된다. 자르고 남는 양을 생각해 굵은 철근(S22 이상)은 6%, 가는 철근(S19 이하)은 3%를 더한다.</p></div>")
         names = {"B1": "Block 1", "B2": "Block 2", "B3": "Block 3"}
@@ -535,16 +538,14 @@ class ReadableBoqAgent:
             sched = self.cad["rebar"][sheet]
             rows2 = "".join(
                 f'<tr><th scope="row">{esc(b["mark"])}</th><td>{b["dia"]}</td>'
-                f'<td class="in"><input type="number" step="any" class="num k-i" data-bar="{i}" data-field="L" value="{b["L"]:.3f}" aria-label="{esc(sheet)} {esc(b["mark"])} 1개 길이"></td>'
-                f'<td class="in"><input type="number" step="1" class="num k-i" data-bar="{i}" data-field="N" value="{b["N"]}" aria-label="{esc(sheet)} {esc(b["mark"])} 개수"></td>'
+                + self.bar_input(i, "L", f'{b["L"]:.3f}', f'{sheet} {b["mark"]} 1개 길이') + self.bar_input(i, "N", str(b["N"]), f'{sheet} {b["mark"]} 개수') +
                 f'<td class="cell" data-bar-total="{i}" data-val="{round(b["L"] * b["N"], 3)}"><span class="ex"><var class="k-c">{b["L"]:.3f}</var> × <var class="k-c">{b["N"]}</var></span><b>{num(b["L"] * b["N"])}</b></td></tr>' for i, b in bars)
             title = f"날개벽 {'·'.join(sched['wing_locations'])}" if sched["block"] == "WW" else BODY_NAME[sched["block"]]
-            detail.append(f'<details><summary>{esc(sheet)} 재료표 {len(bars)}줄 ({title})</summary><div class="scroll"><table class="matrix narrow"><thead><tr><th>기호</th><th>굵기</th><th>1개 길이 (m)</th><th>개수</th><th>총길이 (m)</th></tr></thead><tbody>{rows2}</tbody></table></div></details>')
+            detail.append(f'<details{opened}><summary>{esc(sheet)} 재료표 {len(bars)}줄 ({title})</summary><div class="scroll"><table class="matrix narrow"><thead><tr><th>기호</th><th>굵기</th><th>1개 길이 (m)</th><th>개수</th><th>총길이 (m)</th></tr></thead><tbody>{rows2}</tbody></table></div></details>')
         return self.card("rebar", "철근", "철근은 무게(톤)로 센다. 무게 = 총길이 × 1m 무게다. 도면의 철근 재료표 한 줄 한 줄이 입력 변수다.",
-                         "<h3>기호별 입력값 (도면 재료표와 대조)</h3>", "".join(detail), rules, example, table, dia_sum,
+                         "<h3>기호별 입력값</h3>", "".join(detail), rules, self.web(example), table, dia_sum,
                          f'<div class="final"><span class="final-label">철근가공조립 (NET) H13 + H16~25</span><div>{self.calc_span("총_H13+총_H16_25", 3, " t")}</div></div>',
-                         f'<div class="final"><span class="final-label">철근 재료량 (할증 포함)</span><div><b class="big" data-fx="철근총_gross" data-d="3">{num(rb["gross_total_t"])}</b> t</div>' + (f'<span class="diff" data-fx="철근총_gross-원본_철근재료" data-d="3" data-sign="1">원본 p.3과 {rb["gross_total_t"] - self.env["원본_철근재료"]:+.3f}</span>' if self.has_original else "") + "</div>",
-                         self.check_list("rebar", [", ".join(k.replace(" ", "") for k in rb["records"] and sorted({r["sheet"] for r in rb["records"]})) + "의 철근 재료표와 줄별 대조", "S22 할증 6%는 2026-11-05 확정 기준. 표준품셈 인용 근거를 받을지 판단"]))
+                         f'<div class="final"><span class="final-label">철근 재료량 (할증 포함)</span><div><b class="big" data-fx="철근총_gross" data-d="3">{num(rb["gross_total_t"])}</b> t</div>' + (f'<span class="diff" data-fx="철근총_gross-원본_철근재료" data-d="3" data-sign="1">원본 p.3과 {rb["gross_total_t"] - self.env["원본_철근재료"]:+.3f}</span>' if self.has_original else "") + "</div>")
 
     # ---------------------------------------------------------- 머리말
     def variable_panel(self) -> str:
@@ -558,14 +559,14 @@ class ReadableBoqAgent:
                 continue
             names = list(dict.fromkeys(work.get(k, k) for k in self.usage[v["name"]]["keys"]))
             assumed_rows.append(f'<tr>{self.var_row(v)}<td>{esc(", ".join(names))}</td><td class="src">{esc(v["source"])}</td></tr>')
-        out.append('<h3>가정값 (검은색)</h3><div class="callout"><strong>주의: 도면에 근거가 없는 값입니다</strong><p>' + ("입력받은 값입니다." if self.model.get("assumptions_from") == "user" else "지금 값은 이 과업의 원본 산출서에서 옮겨 적은 것입니다.") + ' 원본 값을 그대로 쓰면 비교할 때 같은 것이 당연하므로, 이 값이 들어간 수량은 원본과 같아도 검증된 것이 아닙니다. 근거를 확인해 값을 정해야 합니다.</p></div>'
+        out.append('<h3>가정값 (검은색)</h3>' + self.web('<div class="callout"><strong>주의: 도면에 근거가 없는 값입니다</strong><p>별도 지정이 없을 때 쓰는 기본값입니다. 원본 값을 그대로 쓰면 비교할 때 같은 것이 당연하므로, 이 값이 들어간 수량은 원본과 같아도 검증된 것이 아닙니다. 다른 값이 정해져 있으면 여기서 고칩니다.</p></div>') +
                    f'<div class="scroll"><table class="matrix vars assumed"><thead><tr><th>변수</th><th>뜻</th><th>값</th><th>단위</th><th>영향 공종</th><th>도면에 없는 사유</th></tr></thead><tbody>{"".join(assumed_rows)}</tbody></table></div>')
         return "".join(out)
 
     def derived_panel(self) -> str:
         derived_rows = "".join(f'<tr><th scope="row" class="vname k-c">{esc(v["name"])}</th><td>{esc(v["label"])}</td><td data-fx="{esc(v["name"])}" data-d="{v["digits"]}"><b>{fmt_var(v["value"], v["digits"])}</b></td><td class="src">{self.mark_names(v["formula"], v["prefix"])}</td></tr>' for v in self.model["variables"] if v["kind"] == "derived")
         count = sum(1 for v in self.model["variables"] if v["kind"] == "derived")
-        return f'<details><summary>계산 변수 {count}개 보기</summary><div class="scroll"><table class="matrix vars"><thead><tr><th>변수</th><th>뜻</th><th>값</th><th>계산식</th></tr></thead><tbody>{derived_rows}</tbody></table></div></details>'
+        return f'<details{" open" if self.frozen else ""}><summary>계산 변수 {count}개 보기</summary><div class="scroll"><table class="matrix vars"><thead><tr><th>변수</th><th>뜻</th><th>값</th><th>계산식</th></tr></thead><tbody>{derived_rows}</tbody></table></div></details>'
 
     LINKS = {"concrete": "concrete", "lean": "lean", "pump": "concrete", "plain_pour": "lean", "form_normal": "form", "form_simple": "form-simple", "shoring": "shoring", "scaffold": "scaffold", "spacer_wall": "spacer", "spacer_slab": "spacer",
              "dowel": "joint", "joint_clean": "construction-joint", "swell": "construction-joint", "waterstop": "joint", "sealant": "joint", "styrofoam": "joint", "rain_wall": "joint", "waterproof": "waterproof", "pvc": "drain", "fabric": "drain", "H13": "rebar", "H16_25": "rebar", "curing": "waterproof", "contraction": "construction-joint", "rebar_gross": "rebar"}
@@ -590,6 +591,9 @@ class ReadableBoqAgent:
     def compare_section(self) -> str:
         """원본이 있으면 비교 요약과 표, 없으면 도면 산출 표."""
         rows = self.result_rows()
+        if self.frozen:
+            body = "".join(f'<tr><th scope="row"><a href="#{self.LINKS[r["key"]]}">{r["work"]}</a></th><td>{esc(r["spec"])}</td><td class="r"><b data-fx="{r["fx"]}" data-d="{0 if r["key"] == "dowel" else 3}">{num(r["total"], 0 if r["key"] == "dowel" else 3)}</b></td><td>{r["unit"]}</td></tr>' for r in rows)
+            return f'<section class="plain" id="result"><h2>수량 총괄</h2><div class="scroll"><table class="matrix sum"><thead><tr><th>공종</th><th>규격</th><th class="r">수량</th><th>단위</th></tr></thead><tbody>{body}</tbody></table></div></section>'
         if not self.has_original:
             why = esc(self.audit["original_note"]) + "." if self.audit["original_status"] == "parse_failed" else "원본 수량산출서가 제공되지 않았습니다."
             body = "".join(f'<tr><th scope="row"><a href="#{self.LINKS[r["key"]]}">{r["work"]}</a></th><td>{esc(r["spec"])}</td><td class="r"><b data-fx="{r["fx"]}" data-d="{0 if r["key"] == "dowel" else 3}">{num(r["total"], 0 if r["key"] == "dowel" else 3)}</b></td><td>{r["unit"]}</td><td>{self.assumed_text(r["res"])}</td></tr>' for r in rows)
@@ -718,7 +722,7 @@ figcaption{font-size:13.5px;color:var(--mute);margin-top:6px;max-width:66ch}
 .line-c{fill:none;stroke:var(--ink);stroke-width:1.5;stroke-dasharray:6 4}
 .wing{stroke:var(--ink);stroke-width:5;fill:none}
 .quick{background:var(--bg);border:1px solid var(--rule);padding:12px 14px;margin:12px 0}
-.quick ul,.review ul{margin:0;padding-left:0;list-style:none;display:grid;gap:5px}
+.quick ul{margin:0;padding-left:0;list-style:none;display:grid;gap:5px}
 .quick p{margin:6px 0}
 .meta{font-size:13.5px;color:var(--mute);margin:6px 0}
 .callout{background:var(--warn-bg);border:1px solid var(--warn-line);padding:12px 14px;margin:14px 0}
@@ -726,9 +730,6 @@ figcaption{font-size:13.5px;color:var(--mute);margin-top:6px;max-width:66ch}
 .final{border-top:2px solid var(--ink);margin-top:18px;padding-top:8px;display:grid;gap:2px}
 .final-label{font-size:13.5px;color:var(--mute)}
 .final .calc b,.big{font-size:20px;font-family:var(--mono)}
-.review{margin-top:16px;border-top:1px dashed var(--rule);padding-top:10px}
-.review label{display:flex;gap:8px;align-items:flex-start;font-size:14.5px}
-.review input{margin-top:5px;flex:none}
 input:focus-visible,a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 details{border:1px solid var(--rule);padding:6px 10px;margin:6px 0}
 summary{cursor:pointer;font-size:14.5px}
@@ -737,7 +738,7 @@ summary{cursor:pointer;font-size:14.5px}
 .terms dt{font-weight:600}
 .terms dd{margin:0;font-size:14.5px;color:var(--mute)}
 .rules{display:grid;gap:10px;padding-left:22px;margin:0}
-.progress{font-family:var(--mono);font-size:14px;color:var(--mute)}
+span.num{font:14px var(--mono)}
 @media (max-width:640px){.card,.plain{padding:16px}header h1{font-size:26px}.cell .ex{white-space:normal;overflow-wrap:anywhere}}
 @media print{.card,.plain{border-color:#999}.status{position:static}var,.k-i,.k-c,b{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
 """
@@ -748,7 +749,7 @@ summary{cursor:pointer;font-size:14.5px}
         return r"""var QTO=(function(){
 var NAME=/^[가-힣A-Za-z_][가-힣A-Za-z0-9_]*/;
 function round3(v){return Number((v+(v>=0?1e-9:-1e-9)).toFixed(3))}
-var FN={sin:function(d){return Math.sin(d*Math.PI/180)},cos:function(d){return Math.cos(d*Math.PI/180)},tan:function(d){return Math.tan(d*Math.PI/180)},sqrt:Math.sqrt,abs:Math.abs,sign:function(v){return Math.abs(v)<0.0005?0:(v>0?1:-1)}};
+var FN={sin:function(d){return Math.sin(d*Math.PI/180)},cos:function(d){return Math.cos(d*Math.PI/180)},tan:function(d){return Math.tan(d*Math.PI/180)},sqrt:Math.sqrt,abs:Math.abs,sign:function(v){return Math.abs(v)<0.0005?0:(v>0?1:-1)},ceil:function(v){return Math.ceil(Number(v.toFixed(6)))}};
 function tokens(s){var out=[],i=0;while(i<s.length){var c=s[i];if(c===' '){i++;continue}var m=/^\d+(\.\d+)?/.exec(s.slice(i));if(m){out.push({t:'n',v:parseFloat(m[0])});i+=m[0].length;continue}m=NAME.exec(s.slice(i));if(m){out.push({t:'id',v:m[0]});i+=m[0].length;continue}out.push({t:c});i++}return out}
 function evaluate(src,get){var k=tokens(src),p=0;
 function expr(){var v=term();while(p<k.length&&(k[p].t==='+'||k[p].t==='-')){var o=k[p++].t;var r=term();v=o==='+'?v+r:v-r}return v}
@@ -797,7 +798,7 @@ var text=d===-4?QTO.fmtVar(v,-4):comma(v,d),ex=c.querySelector('.ex'),b=c.queryS
 if(ex){ex.innerHTML=QTO.mark(QTO.pretty(f.replace(/[가-힣A-Za-z_][가-힣A-Za-z0-9_]*/g,function(n){return QTO.fmtVar(g(n),n in r.digits?r.digits[n]:3)})),f,null,data.kinds)}
 if(b)b.textContent=text;else c.textContent=text});
 var changed=boxes.filter(function(b){return b.classList.contains('edited')}).length+barBoxes.filter(function(b){return b.classList.contains('edited')}).length;
-var s=document.getElementById('edit-status');s.textContent=changed?('도면과 다른 값 '+changed+'개로 계산 중입니다. 그림과 설명 문구의 숫자는 도면 값 기준입니다.'):'지금은 도면에서 읽은 값으로 계산한 결과입니다.';
+var s=document.getElementById('edit-status');s.textContent=changed?('도면과 다른 값 '+changed+'개로 계산 중입니다. 내려받는 파일에 이 값이 반영됩니다. 이 화면의 그림과 설명 문구 숫자는 도면 값 기준입니다.'):'지금은 도면에서 읽은 값으로 계산한 결과입니다.';
 document.getElementById('reset').hidden=!changed;
 var cnt={same:0,same_assumed:0,diff:0,missing:0};
 document.querySelectorAll('tr[data-base]').forEach(function(tr){var base=tr.getAttribute('data-base'),d=tr.querySelector('[data-sign]'),st=tr.querySelector('.state'),now=base;
@@ -807,10 +808,7 @@ Object.keys(cnt).forEach(function(k){var e=document.querySelector('[data-count="
 boxes.forEach(function(b){var base=parseFloat(b.defaultValue);b.addEventListener('input',function(){var v=parseFloat(b.value);if(isNaN(v))return;var name=b.getAttribute('data-var');if(Math.abs(v-base)<1e-9){delete inputs[name];b.classList.remove('edited')}else{inputs[name]=v;b.classList.add('edited')}run()})});
 barBoxes.forEach(function(b){var base=parseFloat(b.defaultValue);b.addEventListener('input',function(){var v=parseFloat(b.value);if(isNaN(v))return;bars[+b.getAttribute('data-bar')][b.getAttribute('data-field')]=v;b.classList.toggle('edited',Math.abs(v-base)>=1e-9);run()})});
 document.getElementById('reset').addEventListener('click',function(){inputs={};boxes.concat(barBoxes).forEach(function(b){b.value=b.defaultValue;b.classList.remove('edited')});bars=data.bars.map(function(b){return{code:b.code,dia:b.dia,L:b.L,N:b.N}});run()});
-var KEY='sta7967-review',saved={};try{saved=JSON.parse(localStorage.getItem(KEY)||'{}')}catch(e){saved={}}
-var chks=[].slice.call(document.querySelectorAll('.chk')),out=document.getElementById('progress');
-function show(){var n=chks.filter(function(b){return b.checked}).length;out.textContent='도면 확인 '+n+' / '+chks.length}
-chks.forEach(function(b){b.checked=!!saved[b.id];b.addEventListener('change',function(){saved[b.id]=b.checked;try{localStorage.setItem(KEY,JSON.stringify(saved))}catch(e){}show()})});show();
+window.QTO_STATE=function(){var edited=[];bars.forEach(function(b,i){var o=data.bars[i];if(b.L!==o.L||b.N!==o.N)edited.push({i:i,L:b.L,N:b.N})});return{inputs:inputs,bars:edited}};
 })();"""
 
     def data_json(self) -> str:
@@ -824,7 +822,32 @@ chks.forEach(function(b){b.checked=!!saved[b.id];b.addEventListener('change',fun
         }
         return json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
 
+    def write_frozen(self) -> Dict[str, Any]:
+        """내려받는 문서. 입력칸과 스크립트와 외부 글꼴이 없고, 수량 표와 산출 근거만 싣는다."""
+        cards = [self.card_concrete(), self.card_lean(), self.card_form(), self.card_form_simple(), self.card_shoring(), self.card_scaffold(), self.card_spacer(), self.card_waterproof(), self.card_joint(), self.card_construction(), self.card_drain(), self.card_rebar()]
+        panel = self.variable_panel()
+        project = " · ".join(x for x in (self.cad["project"]["name"], self.cad["project"]["section"], "STA." + self.cad["project"]["station"] if self.cad["project"]["station"] else "") if x)
+        body = f"""<div class="page">
+<header>
+<p class="sta">{esc(project)}</p>
+<h1>통로암거 수량산출서</h1>
+<ul class="legend" aria-label="글자색 구분"><li class="k-i">붉은색: 입력값</li><li class="k-c">파란색: 인용·계산한 값</li><li class="k-a">검은색: 가정값·규칙</li></ul>
+</header>
+{self.compare_section()}
+<section class="plain" id="vars"><h2>입력값</h2>{panel}</section>
+<section class="plain" id="shape"><h2>평면도</h2>{self.plan_svg()}</section>
+{"".join(cards)}
+<section class="plain" id="derived"><h2>계산 변수</h2>{self.derived_panel()}</section>
+</div>"""
+        page = ('<meta charset="utf-8"><title>통로암거 수량산출서</title><meta name="viewport" content="width=device-width,initial-scale=1">'
+                f"<style>{self.css()}</style>{self.tint_figures(body)}\n")
+        with open(self.output_path, "w", encoding="utf-8") as out:
+            out.write(page)
+        return {"status": "success", "path": self.output_path, "bytes": len(page.encode("utf-8")), "cards": len(cards)}
+
     def run(self) -> Dict[str, Any]:
+        if self.frozen:
+            return self.write_frozen()
         cards = [self.card_concrete(), self.card_lean(), self.card_form(), self.card_form_simple(), self.card_shoring(), self.card_scaffold(), self.card_spacer(), self.card_waterproof(), self.card_joint(), self.card_construction(), self.card_drain(), self.card_rebar()]
         titles = re.findall(r'<section class="card" id="([^"]+)"><h2>([^<]+)</h2>', "".join(cards))
         first = ("compare", "원본과 비교") if self.has_original else ("result", "결과")
@@ -842,7 +865,6 @@ chks.forEach(function(b){b.checked=!!saved[b.id];b.addEventListener('change',fun
 <p class="sta">{esc(" · ".join(x for x in (self.cad["project"]["name"], self.cad["project"]["section"], "STA." + self.cad["project"]["station"] if self.cad["project"]["station"] else "") if x))}</p>
 <h1>통로암거 {"대안 " if self.has_original else ""}수량산출서</h1>
 <p>도면에서 읽은 값으로 수량을 계산합니다. 도면을 옆에 펴 놓고 위에서 아래로 읽으면 됩니다. 수량 식은 숫자 대신 변수로 쓰고, 계산은 곱하기로 한 덩어리를 구한 뒤 더하고 빼는 것이 전부입니다. 길이 단위는 m입니다.</p>
-<p class="progress" id="progress" aria-live="polite"></p>
 {nav}
 </header>
 <div class="status" role="status"><p id="edit-status">지금은 도면에서 읽은 값으로 계산한 결과입니다.</p><button type="button" id="reset" hidden>도면 값으로 되돌리기</button><ul class="legend" aria-label="글자색 구분"><li class="k-i">붉은색: 입력값 (처음 나오는 곳)</li><li class="k-c">파란색: 인용·계산한 값</li><li class="k-a">검은색: 가정값·규칙</li></ul></div>
@@ -853,7 +875,7 @@ chks.forEach(function(b){b.checked=!!saved[b.id];b.addEventListener('change',fun
 {''.join(cards)}
 <section class="plain" id="derived"><h2>계산 변수</h2><p class="intro">입력값에서 자동으로 계산되는 중간 값입니다.</p>{self.derived_panel()}</section>
 {changes}
-<section class="plain" id="questions"><h2>설계자에게 확인할 것</h2><p class="intro">도면만으로 판단할 수 없는 항목입니다.</p><div class="scroll"><table class="matrix"><tbody>{open_rows}</tbody></table></div><p class="meta">같은 변수와 수식이 alternative_boq.xlsx에도 있습니다. 변수표의 변경과 도면 확인 표시는 저장되지 않거나 이 브라우저에만 저장됩니다.</p></section>
+<section class="plain" id="questions"><h2>설계자에게 확인할 것</h2><p class="intro">도면만으로 판단할 수 없는 항목입니다.</p><div class="scroll"><table class="matrix"><tbody>{open_rows}</tbody></table></div><p class="meta">값을 고친 내용은 내려받는 파일에 반영되며, 이 화면을 닫으면 저장되지 않습니다.</p></section>
 </div>"""
         head = ('<meta charset="utf-8"><title>통로암거 수량산출서</title><meta name="claude:viewport-fit-sides" content="cover">'
                 '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'

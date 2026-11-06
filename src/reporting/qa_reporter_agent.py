@@ -129,7 +129,7 @@ class QaReporterAgent:
                   "| 총괄표가 철근 재료량을 보여 주지 않는다 | 총괄표는 NET만, 할증 후 값은 철근 집계표에만 있다 | 총괄표에 NET과 재료량을 함께 표기한다 |", ""]
         lines += ["## 8. 대안 성과물", "", "| 파일 | 내용 |", "| :--- | :--- |",
                   f"| `output/대안_수량산출서_Sta.{cad['project']['station']}.html` | 대안 수량산출서 본문. 산식을 변수로 쓰고 값은 도면에서 읽어 넣는다. 변수 값을 바꾸면 수량이 다시 계산된다 |",
-                  f"| `output/alternative_boq.xlsx` | 계산 원본. `변수` 시트의 이름 정의를 산출 {len(alt['lines'])}행이 참조하고, 철근 {rebar['rows']}행과 함께 수식으로 총괄표까지 연결된다 |",
+                  f"| `output/alternative_boq.xlsx` | 산출 {len(alt['lines'])}행과 철근 {rebar['rows']}행을 값으로 담는다. 수식과 연결은 없다 |",
                   "| `output/alternative_boq.json` | 같은 내용의 기계 판독용 데이터 |",
                   f"| `output/alternative_drawings/대안_*.dxf` | {len(links)}종. 원본 객체 유지, 수량 연계표·부재 라벨·XDATA {sum(r['xdata_links'] for r in links.values())}건 추가 |",
                   "| `output/alternative_drawings/element_map.json`, `alternative_culvert_section.svg` | 부재 ID 연계표, 표준단면 부재도 |", "| `output/도면_변경대비표_14종.md` | 도면별 변경 내역 |", ""]
@@ -141,7 +141,7 @@ class QaReporterAgent:
         else:
             lines.append("독립 검증 전이다.")
         lines += ["", "- AutoCAD로 대안 DXF를 열어 보지 못했다. ezdxf 읽기와 렌더링으로만 확인했다.",
-                  "- Excel로 xlsx를 열어 보지 못했다. 수식은 별도 계산기로 재계산해 확인했으며, 값은 파일을 열 때 계산된다.",
+                  "- Excel로 xlsx를 열어 보지 못했다. 값은 별도 프로그램으로 읽어 대조했다.",
                   "- 일부 입력은 도면에 치수가 없어 산출서 값을 그대로 썼다(9절). 이 값들의 타당성은 검증하지 못했다.",
                   "- 설계 계산의 적정성(구조 안전성, 배근 간격)은 범위 밖이다.", ""]
         # 이 과업에만 해당하는 서술은 공개 코드에 두지 않는다

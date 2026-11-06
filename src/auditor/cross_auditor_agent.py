@@ -12,7 +12,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.common.rules import STATE_LABEL, UNIT_WEIGHT, premium_rate, round3, same
-from src.model.quantity_model import UNTRACED
+from src.model.quantity_model import BLOCK_PREFIX, UNTRACED
 
 P4_COL = {"B1": "Block1", "B2": "Block2", "B3": "Block3"}
 WING_LOC = ["시점좌", "시점우", "종점좌", "종점우"]
@@ -170,7 +170,9 @@ class CrossAuditorAgent:
                 pages.append(next(i["page"] for i in items if i["name"] == "스페이서"))
                 shoring = [l["printed"] for i in items if i["name"] == "동바리" for l in i["lines"]]
                 confirmed = confirmed and all(f"{v:.3f}" in formula for v in shoring)
-                confirmed = confirmed and same(d["boq"] - d["model"], sum(shoring), 0.0025)
+                # 같은 구역 거푸집 차이는 스페이서로 그대로 옮겨 오므로 빼고 본다
+                form_delta = sum(f["model"] - f["boq"] for f in self.diffs if f["key"] == "form_normal" and f["scope"] == d["scope"])
+                confirmed = confirmed and same(d["boq"] - d["model"] + form_delta, sum(shoring), 0.0025)
             boq_sum, model_sum = round3(sum(d["boq"] for d in wing_sp)), round3(sum(d["model"] for d in wing_sp))
             self.add("부대공 연계성", "HIGH", "CORRECTED", "날개벽 스페이서 면적에 동바리 체적이 합산됨",
                      "벽체용 스페이서 산식 끝에 같은 산출서 동바리 항목의 체적(㎥)이 더해져 있다. 면적(㎡) 합계에 체적을 더해 합계가 동바리 총량만큼 과다하다." if confirmed else "날개벽 스페이서 차이(원인 재확인 필요)",
@@ -178,6 +180,31 @@ class CrossAuditorAgent:
             self.issues[-1]["keys"] = ["spacer_wall"]
             if not confirmed:
                 self.issues[-1]["status"] = "UNEXPLAINED"
+
+        # 날개벽 거푸집: 바깥 구간 폭 규칙(날개두께)과 원본의 폭이 다름. 차이를 폭으로 환산해 확인한다
+        wing_form = take(lambda d: d["key"] == "form_normal" and d["scope"].startswith("WW"))
+        if wing_form:
+            env = model["env"]
+            implied = {round3(env["날개외측폭"] - (d["model"] - d["boq"]) / env["날개끝높이"]) for d in wing_form}
+            boq_sum, model_sum = round3(sum(d["boq"] for d in wing_form)), round3(sum(d["model"] for d in wing_form))
+            width = next(iter(implied))
+            self.add("지정 규칙", "MEDIUM", "CORRECTED" if len(implied) == 1 and width >= 0 else "UNEXPLAINED", "날개벽 거푸집 바깥 구간 폭이 원본과 다름",
+                     f"대안은 바깥 구간 폭을 날개두께 {env['날개외측폭']:.3f}로 산정한다. 차이를 폭으로 환산하면 원본은 {width:.3f}이다.",
+                     f"날개벽 합계 {boq_sum:.3f} ㎡", f"날개두께 {env['날개외측폭']:.3f}", f"{model_sum:.3f} ㎡", f"{model_sum - boq_sum:+.3f} ㎡", [21], ["일반도 (2)"])
+            self.issues[-1]["keys"] = ["form_normal"]
+
+        # 수축이음: 개소 규칙(평균길이 ÷ 6 올림)과 원본의 개소가 다름. 차이를 개소로 환산해 확인한다
+        contraction = take(lambda d: d["key"] == "contraction")
+        if contraction:
+            env = model["env"]
+            one = env["줄눈높이"] * 2 + env["외곽폭"]
+            counts = {d["scope"]: d["boq"] / one for d in contraction}
+            whole = all(abs(v - round(v)) < 0.001 for v in counts.values())
+            boq_sum, model_sum = round3(sum(d["boq"] for d in contraction)), round3(sum(d["model"] for d in contraction))
+            self.add("지정 규칙", "MEDIUM", "CORRECTED" if whole else "UNEXPLAINED", "수축이음 개소가 원본과 다름",
+                     "대안은 블록별 평균길이 ÷ 6을 올림해 개소를 정한다. 원본을 1곳 길이로 나눈 개소: " + ", ".join(f"{k} {v:.0f}곳" for k, v in counts.items()) + ".",
+                     f"{boq_sum:.3f} m", ", ".join(f"{d['scope']} {env[BLOCK_PREFIX[d['scope']] + '_수축이음개소']:.0f}곳" for d in contraction), f"{model_sum:.3f} m", f"{model_sum - boq_sum:+.3f} m", [4], ["일반도 (1)"])
+            self.issues[-1]["keys"] = ["contraction"]
 
         # 날개벽 방수: 고정 숫자가 도면·같은 산출서 배면치수에서 나오지 않음
         wing_wp = take(lambda d: d["key"] == "waterproof" and d["scope"].startswith("WW"))
@@ -289,14 +316,13 @@ class CrossAuditorAgent:
         if not mix:
             self.add("정보 전달", "LOW", "CORRECTED", "총괄표 PVC·부직포 행에 단위 누락", "p.2, p.4의 PVC Pipe, 부직포 행에 단위가 비어 있다. 대안은 m, ㎡로 표기한다.", "단위 공란", "-", "m / ㎡", None, [2, 4], [])
 
-    def open_items(self, cad: Dict[str, Any]) -> List[Dict[str, str]]:
+    def open_items(self, cad: Dict[str, Any], model: Dict[str, Any]) -> List[Dict[str, str]]:
         misc = cad["misc"]
         drain = misc["drain_pipe"]
         items = [
-            {"item": "수축이음 개소", "note": UNTRACED["contraction_count"]["note"] + ". 근거 확인이 필요하다."},
-            {"item": "날개벽 유로폼 바깥 구간", "note": UNTRACED["wing_side_top"]["note"] + ". 근거 확인이 필요하다."},
-            {"item": "비계 가정값", "note": f"본체 높이 공제 {UNTRACED['scaffold_offset']['value']:.3f}, 날개벽 높이 {UNTRACED['wing_scaffold_h']['value']:.3f}, 측면 폭 {UNTRACED['wing_scaffold_side']['value']:.3f}은 도면에 표기가 없는 가정값이다. 근거 확인이 필요하다."},
-            {"item": "PVC 길이", "note": f"도면 {drain['spec']} {drain['ea_per_location']}EA와 PVC길이 {UNTRACED['pvc_length']['value']:.3f}(가정값)의 관계 확인이 필요하다."},
+            {"item": "비계 공제", "note": f"{UNTRACED['scaffold_offset']['note']}. 지금 값 {model['env']['비계공제']:.3f}."},
+            {"item": "규칙으로 정한 값", "note": "수축이음 개소(평균길이 ÷ 6 올림), 날개벽 비계 높이(날개벽 높이 − 비계공제), 비계 측면 폭(날개두께 + 1.2 + 1.2), 거푸집 바깥 구간 폭과 PVC 길이(날개두께)는 지정 규칙이다."},
+            {"item": "PVC 길이", "note": f"도면 재료표는 {drain['spec']} {drain['ea_per_location']}EA로 표기한다. 대안은 PVC길이를 날개두께 {model['env']['PVC길이']:.3f}로 산정한다."},
         ]
         if misc["dowel"]["cap_noted"] or misc["dowel"]["paint_noted"]:
             items.append({"item": "다웰 캡·녹막이 페인트", "note": "일반도(1) 시공이음 상세에 DOWEL CAP Φ35, 녹막이 페인트(2회)가 표기되어 있으나 산출서에 별도 항목이 없다. 다웰바 단가 포함 여부 확인 필요."})
@@ -401,7 +427,7 @@ class CrossAuditorAgent:
             "statistics": {"internal": internal, "rebar": rebar, "quantity_diffs": self.diffs},
             "total_defects_found": len(self.issues),
             "issues": self.issues,
-            "open_items": self.open_items(cad),
+            "open_items": self.open_items(cad, model),
         }
         with open(self.output_path, "w", encoding="utf-8") as out:
             json.dump(report, out, ensure_ascii=False, indent=1)

@@ -10,13 +10,25 @@ https://itkim77.github.io/box-quantity-web/
 
 1. 한 구조물의 DXF 도면 전체를 선택합니다.
 2. 비교할 원본 수량산출서 PDF가 있으면 선택합니다.
-3. 도면에 없는 값(가정값)을 입력합니다. 근거를 확인해 넣어 주세요.
+3. 결과 화면에서 입력값을 확인하고 필요하면 고칩니다. 도면에 없는 값의 규칙은 아래와 같습니다.
+4. 수량산출서를 HTML이나 Excel로 내려받습니다.
 
 ## 결과
 
 - 원본과의 비교: 일치, 일치(가정값 의존), 차이, 원본에 없음
-- 수량산출서(HTML): 변수식과 값을 넣은 계산을 나란히 보여 주고, 입력값을 바꾸면 다시 계산합니다.
-- Excel과 JSON
+- 웹 화면: 변수식과 값을 넣은 계산을 나란히 보여 주고, 입력값을 바꾸면 다시 계산합니다.
+- 내려받는 파일: 화면에 반영된 값으로 만듭니다. HTML은 입력칸이 없고 Excel은 수식 없이 값만 담습니다. 수량 표와 산출 근거만 있고 원본 비교와 설명은 없습니다.
+
+## 도면에 없는 값
+
+| 값 | 규칙 |
+| :--- | :--- |
+| 본체 비계 높이 공제 | 별도 지정이 없으면 0.5m (웹 화면에서 수정) |
+| 날개벽 비계 높이 | 날개벽 높이 − 비계 공제 |
+| 날개벽 비계 측면 폭 | 날개벽 두께 + 1.2m + 1.2m |
+| 날개벽 거푸집 바깥 구간 폭 | 날개벽 두께 |
+| PVC 1개 길이 | 날개벽 두께 |
+| 블록별 수축이음 개소 | 블록 평균 길이 ÷ 6m, 올림 |
 
 글자색은 값의 성격을 나타냅니다. 붉은색은 입력값을 받는 칸, 파란색은 인용하거나 계산한 값, 검은색은 도면에 근거가 없는 가정값과 규칙입니다.
 
@@ -30,9 +42,7 @@ https://itkim77.github.io/box-quantity-web/
 
 ```
 pip install -r requirements.txt
-python src/workflow_orchestrator.py --docs 도면폴더 --boq 원본.pdf --assumptions 가정값.json
+python src/workflow_orchestrator.py --docs 도면폴더 --boq 원본.pdf
 ```
-
-가정값 JSON 항목: `contraction_count`(`B1`, `B2`, `B3`), `wing_side_top`, `scaffold_offset`, `wing_scaffold_h`, `wing_scaffold_side`, `pvc_length`.
 
 명령줄 실행은 도면 연계 정보를 넣은 DXF와 보고서도 만듭니다.
